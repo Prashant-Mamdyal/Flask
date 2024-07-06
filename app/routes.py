@@ -12,8 +12,8 @@ orders_ns = Namespace('orders', description='Orders endpoints')
 class CustomerList(Resource):
     @customers_ns.marshal_list_with(customer_model)
     def get(self):
-        customers = Customer.query.all()
-        return customers, 200
+        customer = Customer.query.all()
+        return customer, 200
     
     @customers_ns.expect(customer_input_model)
     @customers_ns.marshal_with(customer_model)
@@ -23,4 +23,27 @@ class CustomerList(Resource):
         db.session.add(new_customer)
         db.session.commit()
         return new_customer, 201
+
+@customers_ns.route("/<int:customer_id>")    
+class CustomerDetails(Resource):
+    @customers_ns.marshal_with(customer_model)
+    def get(self, customer_id):
+        customer = Customer.query.get(customer_id)
+        return customer, 200
     
+    @customers_ns.expect(customer_input_model)
+    @customers_ns.marshal_with(customer_model)
+    def put(self, customer_id):
+        data = request.json
+        customer = Customer.query.get(customer_id)
+        customer.name = data['name']
+        customer.contact_info = data['contact_info']
+        db.session.commit()
+        return customer, 200
+    
+    @customers_ns.marshal_list_with(customer_model)
+    def delete(self, customer_id):
+        customer = Customer.query.get_or_404(customer_id)
+        db.session.delete(customer) 
+        db.session.commit()
+        return customer, 200
