@@ -1,8 +1,9 @@
 from flask import request
 from flask_restx import Resource, Namespace
-from .models import Customer, Order, OrderItem
-from .api_models import customer_model, customer_input_model, order_model, order_input_model, order_input_status_model, orderitem_model
-from .extensions import db
+from datetime import datetime
+from .models import Customer, Order, OrderItem, Shipment
+from .api_models import customer_model, customer_input_model, order_model, order_input_model, orderitem_model, order_input_status_model
+from .extensions import api, db
 
 customers_ns = Namespace("customers", description='Customers endpoints')
 orders_ns = Namespace('orders', description='Orders endpoints')
@@ -29,6 +30,8 @@ class CustomerDetails(Resource):
     @customers_ns.marshal_with(customer_model)
     def get(self, customer_id):
         customer = Customer.query.get(customer_id)
+        if not customer:
+            api.abort(404, f"Customer {customer_id} not found")
         return customer, 200
     
     @customers_ns.expect(customer_input_model)
@@ -36,17 +39,25 @@ class CustomerDetails(Resource):
     def put(self, customer_id):
         data = request.json
         customer = Customer.query.get(customer_id)
+        if not customer:
+            api.abort(404, f"Customer {customer_id} not found")
         customer.name = data['name']
         customer.contact_info = data['contact_info']
         db.session.commit()
         return customer, 200
     
-    @customers_ns.marshal_list_with(customer_model)
+
     def delete(self, customer_id):
-        customer = Customer.query.get_or_404(customer_id)
+        customer = Customer.query.get(customer_id)
+        if not customer:
+            api.abort(404, f"Customer {customer_id} not found")
+        
+        if customer.orders:
+            api.abort(400, f"Customer {customer_id} has associated data in orders tables and cannot be deleted")
+
         db.session.delete(customer) 
         db.session.commit()
-        return customer, 200
+        return {"message": "customer deleted successfully"}
     
 #-----------------------------------------------
 @orders_ns.route("/")
@@ -60,7 +71,17 @@ class OrderList(Resource):
     @orders_ns.marshal_with(order_model)
     def post(self):
         data = request.json
-        new_order = Order(customer_id = data['customer_id'], order_date = data['order_date'], status = data['status'])
+        customer_id = data['customer_id']
+        customer = Customer.query.get(customer_id)
+        if not customer:
+            api.abort(404, f"Customer {customer_id} not present")
+
+        try:
+            order_date = datetime.fromisoformat(data['order_date'])
+        except ValueError:
+            api.abort(400, "Invalid date format. Use ISO 8601 format.")
+
+        new_order = Order(customer_id=customer_id, order_date=order_date, status=data['status'])
         db.session.add(new_order)
         db.session.commit()
         return new_order , 201
@@ -69,25 +90,49 @@ class OrderList(Resource):
 class OrderDetails(Resource):
     @orders_ns.marshal_with(order_model)
     def get(self, order_id):
-        new_order = Order.query.get_or_404(order_id)
-        return new_order, 200
+        order = Order.query.get(order_id)
+        if not order:
+            api.abort(404, f"Order {order_id} not found")
+        return order, 200
 
     @orders_ns.expect(order_input_model)
     @orders_ns.marshal_with(order_model)
     def put(self, order_id):
         data = request.json
+        customer_id = data['customer_id']
+        customer = Customer.query.get(customer_id)
+        if not customer:
+            api.abort(404, f'Customer {customer_id} not present')
+
+        try:
+            order_date = datetime.fromisoformat(data['order_date'])
+        except ValueError:
+            api.abort(400, "Invalid date format. Use ISO 8601 format.")
+
         order = Order.query.get(order_id)
-        order.customer_id = data['customer_id']
-        order.order_date = data['order_date']
+        if not order:
+            api.abort(404, f'Order {order_id} not present')
+
+        order.customer_id = customer_id
+        order.order_date = order_date
         order.status = data['status']
         db.session.commit()
-        return order, 200 
+        return order, 200
     
     def delete(self, order_id):
-        order = Order.query.get_or_404(order_id)
+        order = Order.query.get(order_id)
+        if not order:
+            api.abort(404, f'Order {order_id} not found')
+            
+        if order.order_items:
+            api.abort(400, f'Order {order_id} has associated data in order items table and cannot be deleted')
+
+        if order.shipments:
+            api.abort(400, f'Order {order_id} has associated data in shipment table and cannot be deleted')
+
         db.session.delete(order)
         db.session.commit()
-        return {"message":"Order deleted successfully"}, 200
+        return {"message": "Order deleted successfully"}, 200
     
 @orders_ns.route("/<int:order_id>/status")
 class OrderStatus(Resource):
@@ -95,14 +140,29 @@ class OrderStatus(Resource):
     @orders_ns.marshal_with(order_model)
     def patch(self, order_id):
         data = request.json
-        order = Order.query.get_or_404(order_id)
+        valid_statuses = {'Pending', 'Fulfilled', 'Cancelled'}
+
+        if 'status' not in data or data['status'] not in valid_statuses:
+            api.abort(400, 'Invalid status. Please set status to Pending, Fulfilled, or Cancelled.')
+
+        order = Order.query.get(order_id)
+        if not order:
+            api.abort(404, f'Order {order_id } not found')
+            
         order.status = data['status']
         db.session.commit()
         return order, 200
     
-@orders_ns.route("<int:order_id>/items")
+@orders_ns.route("/<int:order_id>/items")
 class OrderItemsList(Resource):
     @orders_ns.marshal_list_with(orderitem_model)
     def get(self, order_id):
-        orderitem = OrderItem.query.get(order_id)
-        return orderitem, 200
+        order = Order.query.get(order_id)
+        if not order:
+            api.abort(404, f'Order {order_id} not present')
+
+        order_items = OrderItem.query.filter_by(order_id=order_id).all()
+        if not order_items:
+            return [], 200  
+
+        return order_items, 200
